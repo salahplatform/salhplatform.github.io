@@ -146,7 +146,7 @@
       flex-wrap: wrap;
     }
     .test-box label { font-size: 12px; color: #666; }
-    .test-box input[type="date"] {
+    .test-box input[type="date"], .test-box input[type="time"] {
       background: #1a1a1a;
       border: 1px solid #2a2a2a;
       border-radius: 8px;
@@ -173,13 +173,13 @@
   <div class="wrap">
     <div class="badge">🕌 Mesquite, Texas</div>
     <h1>Prayer Times</h1>
-    <p class="sub">Calculated for Mesquite, TX.</p>
+    <p class="sub">Calculated for Mesquite, TX ·</p>
     <div class="current-time" id="current-time">--:-- --</div>
     <div class="current-date" id="current-date">--</div>
     <div class="hijri-date" id="hijri-date">--</div>
 
     <div class="test-box">
-      <label> Check Time of Salah:</label>
+      <label>Ceck the Salah for:</label>
       <input type="date" id="test-date-input">
       <button id="test-date-go">Apply</button>
       <button id="test-date-reset">Reset to Today</button>
@@ -197,6 +197,7 @@
       </div>
     </div>
 
+    <div class="prayers-label" id="prayers-label" style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#555;margin-bottom:0.75rem;text-align:left;">Today's Prayer Times</div>
     <div class="prayers" id="prayer-list"></div>
 
     <div class="quran-verse">
@@ -210,7 +211,7 @@
   </div>
 
 <script>
-// ── Prayer time calculation (ISNA method, verified against known Mesquite TX times) ──
+// ── Prayer time calculation ( verified against known Mesquite TX times) ──
 const LAT = 32.7668;   // Mesquite, TX
 const LNG = -96.5992;
 const TZ  = 'America/Chicago';
@@ -329,7 +330,9 @@ function buildList(times) {
 }
 
 function updateHighlights(times) {
-  const now = getEffectiveNow();
+  // Always based on the REAL current moment — the test date only changes which
+  // day's prayer times are displayed in the list above, never this live countdown.
+  const now = new Date();
   const nowInTZ = new Date(now.toLocaleString('en-US', { timeZone: TZ }));
   const nowMins = nowInTZ.getHours() * 60 + nowInTZ.getMinutes();
 
@@ -371,7 +374,8 @@ function updateHighlights(times) {
 }
 
 function updateClock() {
-  const now = getEffectiveNow();
+  // Always the real current moment — never affected by the test date picker
+  const now = new Date();
   document.getElementById('current-time').textContent =
     now.toLocaleTimeString('en-US', { timeZone: TZ, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   document.getElementById('current-date').textContent =
@@ -380,33 +384,44 @@ function updateClock() {
 }
 
 // ── Test-date override ──────────────────────────────────────────
-let testDateOffset = 0; // ms offset added to real "now"
+// When testing, we freeze the clock at the exact date+time chosen, instead of
+// letting real-world seconds keep advancing — otherwise a test at 11:51 PM
+// would make every test date look like "almost midnight", breaking the
+// next-prayer calculation regardless of which date was picked.
+let frozenTestTime = null; // a Date (UTC instant) to use as "now", or null = live mode
 
 function getEffectiveNow() {
-  return new Date(Date.now() + testDateOffset);
+  return frozenTestTime ? frozenTestTime : new Date();
 }
 
 function setupTestControls() {
-  const input = document.getElementById('test-date-input');
+  const dateInput = document.getElementById('test-date-input');
   const goBtn = document.getElementById('test-date-go');
   const resetBtn = document.getElementById('test-date-reset');
 
   goBtn.addEventListener('click', () => {
-    if (!input.value) return;
-    const [y, m, d] = input.value.split('-').map(Number);
-    const chosen = new Date(y, m - 1, d, 12, 0, 0); // noon local to avoid TZ edge issues
-    const real = new Date();
-    testDateOffset = chosen - new Date(real.getFullYear(), real.getMonth(), real.getDate(), 12, 0, 0);
+    if (!dateInput.value) return;
+    const [y, m, d] = dateInput.value.split('-').map(Number);
+    frozenTestTime = chicagoWallTimeToUtc(y, m - 1, d, 12, 0, 0); // noon, just for listing that day's times
     lastDay = null; // force recalculation
     run();
   });
 
   resetBtn.addEventListener('click', () => {
-    testDateOffset = 0;
-    input.value = '';
+    frozenTestTime = null;
+    dateInput.value = '';
     lastDay = null;
     run();
   });
+}
+
+// Converts a Chicago-local wall-clock time into the equivalent real UTC instant (ms),
+// correctly accounting for whatever DST offset applies on that date.
+function chicagoWallTimeToUtc(y, m, d, hh, mm, ss) {
+  // Start with a guess assuming UTC, then correct using the actual Chicago offset for that date.
+  const guessUtc = new Date(Date.UTC(y, m, d, hh, mm, ss));
+  const offsetHours = getTzOffset(guessUtc, TZ); // e.g. -5 (CDT) or -6 (CST)
+  return new Date(Date.UTC(y, m, d, hh - offsetHours, mm, ss));
 }
 
 // ── Hijri calendar (tabular Islamic calendar, civil/Fatimid base) ──
@@ -459,10 +474,13 @@ function gregorianToHijriString(date) {
   return `${hDay} ${monthNames[hMonth]} ${hYear} AH`;
 }
 
-let cachedTimes = null;
+let cachedTimes = null;      // times for whichever date is being displayed (today, or test date)
 let lastDay = null;
+let realTodayTimes = null;   // ALWAYS today's real times — used only for the live countdown
+let realLastDay = null;
 
 function run() {
+  // Displayed list: respects the test date if one is applied
   const now = getEffectiveNow();
   const todayStr = now.toLocaleDateString('en-US', { timeZone: TZ });
 
@@ -473,8 +491,24 @@ function run() {
     buildList(cachedTimes);
   }
 
+  const label = document.getElementById('prayers-label');
+  if (label) {
+    label.textContent = frozenTestTime
+      ? `Preview: ${todayStr}`
+      : "Today's Prayer Times";
+  }
+
+  // Live countdown: always based on the real current date, ignoring any test override
+  const realNow = new Date();
+  const realTodayStr = realNow.toLocaleDateString('en-US', { timeZone: TZ });
+  if (realTodayStr !== realLastDay) {
+    realTodayTimes = computeTimes(new Date(realNow.toLocaleString('en-US', { timeZone: TZ })));
+    for (const k in realTodayTimes) realTodayTimes[k] = decimalToTime(realTodayTimes[k]);
+    realLastDay = realTodayStr;
+  }
+
   updateClock();
-  updateHighlights(cachedTimes);
+  updateHighlights(realTodayTimes);
 }
 
 setupTestControls();
