@@ -491,12 +491,16 @@ function run() {
     buildList(cachedTimes);
   }
 
-  const label = document.getElementById('prayers-label');
-  if (label) {
-    label.textContent = frozenTestTime
-      ? `Preview: ${todayStr}`
-      : "Today's Prayer Times";
+ const label = document.getElementById('prayers-label');
+
+if (label) {
+  if (frozenTestTime) {
+    label.textContent =
+      `Preview: ${todayStr} • 🌙 ${gregorianToHijriString(frozenTestTime)}`;
+  } else {
+    label.textContent = "Today's Prayer Times";
   }
+}
 
   // Live countdown: always based on the real current date, ignoring any test override
   const realNow = new Date();
